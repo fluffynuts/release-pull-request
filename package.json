@@ -52,7 +52,7 @@
     "@octokit/rest": "^22.0.0",
     "exec-step": "^0.21.0",
     "inquirer-autocomplete-standalone": "^0.8.1",
-    "system-wrapper": "^1.8.0",
+    "system-wrapper": "^1.9.0",
     "yargs": "^18.0.0"
   },
   "bin": {
