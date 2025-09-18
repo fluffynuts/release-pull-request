@@ -167,9 +167,6 @@ async function selectRepo(
         async () => await listUserRepos(client)
     );
     const config = await readConfig();
-    console.log("prompt for repo",
-        config.repoHistory
-    );
     const result = await promptWithChoices(
         "Select repository",
         repos,
