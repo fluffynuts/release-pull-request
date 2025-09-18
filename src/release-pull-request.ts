@@ -2,7 +2,13 @@
 import { CliOptions } from "./release-pull-request-cli.js";
 import { ctx } from "exec-step";
 import { system } from "system-wrapper";
-import { Dictionary, GitHubClient, PullRequest, Release } from "./interfaces.js";
+import { Choice, Config, Dictionary, GitHubClient, PullRequest, Release } from "./interfaces.js";
+import { joinPath, findHomeFolder, fileExists, readTextFile, writeTextFile } from "yafs";
+import type { ChoiceOrSeparatorArray } from "inquirer-autocomplete-standalone";
+import autocomplete, { Separator } from "inquirer-autocomplete-standalone";
+import { Octokit } from "@octokit/rest";
+
+const configFile = joinPath(findHomeFolder(), ".release-pull-request");
 
 const
     NO_TOKEN = 1,
@@ -14,7 +20,6 @@ export async function createRelease(
     const
         // 0. validate token set
         token = readToken(opts),
-        { Octokit } = await import("@octokit/rest"),
         client = new Octokit({
             auth: `token ${token}`
         }) as GitHubClient;
@@ -139,7 +144,8 @@ async function selectPullRequest(
     } while (count);
     const selected = await promptWithChoices(
         "Select pull request",
-        Object.keys(lookup).sort()
+        Object.keys(lookup).sort(),
+        [], "", ""
     );
     const result = lookup[selected];
     if (!result) {
@@ -151,7 +157,7 @@ async function selectPullRequest(
 async function selectRepo(
     opts: CliOptions,
     client: GitHubClient
-) {
+): Promise<string> {
     const providedRepo = determineFullRepoNameFrom(opts);
     if (!!providedRepo) {
         return providedRepo;
@@ -160,13 +166,27 @@ async function selectRepo(
         "listing available repositories...",
         async () => await listUserRepos(client)
     );
-    return promptWithChoices("Select repository", repos);
+    const config = await readConfig();
+    console.log("prompt for repo",
+        config.repoHistory
+    );
+    const result = await promptWithChoices(
+        "Select repository",
+        repos,
+        config.repoHistory,
+        "Recent repos:",
+        "Other repos:"
+    );
+    await updateConfig({
+        repoHistory: [ result ]
+    });
+    return result;
 }
 
 async function listUserRepos(
     client: GitHubClient,
     pageOffset: number = 0
-) {
+): Promise<string[]> {
     const parallel = [ 0, 1, 2, 3, 4, 5 ], pages = parallel.map(i => i + pageOffset), promises = pages
         .map(i => client.repos.listForAuthenticatedUser({
             page: i,
@@ -190,6 +210,46 @@ async function listUserRepos(
     return Array.from(new Set(results));
 }
 
+async function updateConfig(props: Partial<Config>): Promise<void> {
+    const
+        config = {} as Config;
+    if (await fileExists(configFile)) {
+        const
+            contents = await readTextFile(configFile),
+            existing = JSON.parse(contents);
+        merge(config, existing);
+    }
+    merge(config, props);
+    await writeTextFile(configFile, JSON.stringify(config, null, 2));
+}
+
+async function readConfig(): Promise<Config> {
+    const result: Config = {
+        repoHistory: []
+    };
+    if (await fileExists(configFile)) {
+        const
+            contents = await readTextFile(configFile),
+            existing = JSON.parse(contents);
+        merge(result, existing);
+    }
+    return result;
+}
+
+export function merge(target: Dictionary<any>, from: Dictionary<any>): Dictionary<any> {
+    if (!from) {
+        return target;
+    }
+    for (const k of Object.keys(from)) {
+        if (Array.isArray(target[k])) {
+            target[k].unshift(...from[k]);
+        } else {
+            target[k] = from[k];
+        }
+    }
+    return target;
+}
+
 function determineFullRepoNameFrom(opts: CliOptions) {
     if (!opts.repo) {
         return undefined;
@@ -205,25 +265,88 @@ function determineFullRepoNameFrom(opts: CliOptions) {
     return `${opts.owner}/${opts.repo}`;
 }
 
+export async function sortChoices(
+    list: Choice[],
+    history: string[],
+    recentChoicesLabel: string,
+    otherChoicesLabel: string
+): Promise<ChoiceOrSeparatorArray<string>> {
+    const
+        lookup = list.reduce((acc, cur) => {
+            acc[`${cur.value}`.toLowerCase()] = cur;
+            return acc;
+        }, {} as Dictionary<Choice>);
+    if (!history) {
+        const
+            sortedValues = list.map(o => `${o.value}`.toLowerCase()).sort();
+        return sortedValues.map(o => lookup[o] as Choice);
+    }
+    const
+        values = new Set(list.map(o => o.value)),
+        recent = [] as string[];
+    for (const item of history) {
+        if (values.has(item)) {
+            recent.push(item);
+        }
+        values.delete(item);
+    }
+
+    const remaining = Array.from(values)
+        .map(s => s.toLowerCase())
+        .sort()
+        .map(v => lookup[v] as Choice);
+    if (recent.length) {
+        const
+            recentChoices = recent
+                .map(s => s.toLowerCase())
+                .sort()
+                .map(v => lookup[v] as Choice);
+        const result = [
+            new Separator(recentChoicesLabel),
+            ...recentChoices,
+            new Separator(otherChoicesLabel),
+            ...remaining,
+            new Separator()
+        ];
+        await writeTextFile("/tmp/repos.json", JSON.stringify(result, null, 2));
+        return result;
+    } else {
+        return remaining;
+    }
+}
+
 async function promptWithChoices(
     message: string,
-    choices: string[]
+    choices: string[],
+    history: string[],
+    recentLabel: string,
+    otherLabel: string
 ) {
-    const { default: autocomplete } = await import("inquirer-autocomplete-standalone");
-    const mapped = choices.map(s => ({
-        value: s,
-        name: s,
-        disabled: false
-    }));
+    const mapped = await sortChoices(
+        choices.map(s => ({
+            value: s,
+            name: s,
+            disabled: false
+        })), history, recentLabel, otherLabel);
+    const fallback = history && history.length
+        ? history[0]
+        : undefined;
     return autocomplete({
         message,
+        suggestOnly: false,
+        default: fallback,
         source: async (input?: string) => {
             if (!input) {
                 return mapped;
             }
             const search = input.toLowerCase();
             return mapped
-                .filter(s => s.value.toLowerCase().includes(search));
+                .filter(s => {
+                    if (s["type"] === "separator") {
+                        return false;
+                    }
+                    return s.value.toLowerCase().includes(search);
+                });
         }
     });
 }

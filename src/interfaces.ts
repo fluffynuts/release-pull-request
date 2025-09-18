@@ -255,3 +255,12 @@ export interface GitHubClient {
         createRelease(req: Partial<Release>): Promise<Response<Release>>;
     };
 }
+export interface Config {
+    repoHistory: string[];
+}
+export interface Choice {
+    value: string;
+    name: string;
+    description?: string;
+    disabled: boolean;
+}
