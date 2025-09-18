@@ -1,3 +1,3 @@
-release-pull-request2
+release-pull-request
 ---
 semi-automates creating a release from a pull request at GitHub

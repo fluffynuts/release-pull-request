@@ -55,7 +55,7 @@
     "yargs": "^18.0.0"
   },
   "bin": {
-    "release-pull-request2": "./dist/release-pull-request2-cli.js"
+    "release-pull-request": "./dist/release-pull-request-cli.js"
   },
   "homepage": "https://@github.com/fluffynuts/release-pull-request",
   "repository": {
